@@ -142,6 +142,17 @@ Important rules:
 - `Send`, `Set`, `Clear`, and `Update` return after the engine has processed the input
 - timer re-entry uses a non-blocking send path and drops when the inbox is full
 
+## Shutdown
+
+`Shutdown(ctx)` is graceful but bounded.
+
+- new inputs are rejected as soon as shutdown begins
+- inputs already accepted into the inbox are drained before shutdown returns
+- delayed scheduled emits that have not fired yet are canceled
+- actions already running through the internal scheduler are allowed to finish until `ctx` expires
+
+After `Shutdown(...)` returns successfully, no more state transitions occur and `State()` reflects the last committed state.
+
 ## YAML Shape
 
 ```yaml

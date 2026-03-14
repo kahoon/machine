@@ -67,11 +67,17 @@ func RegisterAction[T any](reg *Registry, name string, h ActionHandler[T]) error
 
 	reg.actions[name] = actionEntry{
 		name: name,
-		decode: func(raw map[string]any) (any, error) {
+		decode: func(raw map[string]any) (_ any, err error) {
 			var params T
 			if len(raw) == 0 {
 				return params, nil
 			}
+
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					err = fmt.Errorf("machine: marshal params for action %q: %v", name, recovered)
+				}
+			}()
 
 			buf, err := yamlv3.Marshal(raw)
 			if err != nil {

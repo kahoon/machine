@@ -185,8 +185,7 @@ func (r *Registry) compileAction(cfg ActionConfig, inputs map[string]compiledInp
 		return compiledAction{}, fmt.Errorf("%w: action must declare exactly one verb", ErrInvalidConfig)
 	}
 
-	switch {
-	case cfg.Run != nil:
+	if cfg.Run != nil {
 		if cfg.Run.Action == "" {
 			return compiledAction{}, fmt.Errorf("%w: run.action is required", ErrInvalidConfig)
 		}
@@ -205,7 +204,8 @@ func (r *Registry) compileAction(cfg ActionConfig, inputs map[string]compiledInp
 			params: params,
 			entry:  entry,
 		}, nil
-	case cfg.Schedule != nil:
+	}
+	if cfg.Schedule != nil {
 		if cfg.Schedule.ID == "" || cfg.Schedule.After == "" || cfg.Schedule.Emit == "" {
 			return compiledAction{}, fmt.Errorf("%w: schedule.id, schedule.after, and schedule.emit are required", ErrInvalidConfig)
 		}
@@ -227,16 +227,13 @@ func (r *Registry) compileAction(cfg ActionConfig, inputs map[string]compiledInp
 			after: Duration(after),
 			emit:  InputSet(1) << input.bit,
 		}, nil
-	case cfg.Cancel != nil:
-		if cfg.Cancel.ID == "" {
-			return compiledAction{}, fmt.Errorf("%w: cancel.id is required", ErrInvalidConfig)
-		}
-		return compiledAction{
-			kind: ActionCancel,
-			id:   cfg.Cancel.ID,
-			name: cfg.Cancel.ID,
-		}, nil
-	default:
-		return compiledAction{}, fmt.Errorf("%w: unreachable action verb state", ErrInvalidConfig)
 	}
+	if cfg.Cancel.ID == "" {
+		return compiledAction{}, fmt.Errorf("%w: cancel.id is required", ErrInvalidConfig)
+	}
+	return compiledAction{
+		kind: ActionCancel,
+		id:   cfg.Cancel.ID,
+		name: cfg.Cancel.ID,
+	}, nil
 }

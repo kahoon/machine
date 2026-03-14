@@ -2,6 +2,7 @@ package machine
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -202,5 +203,103 @@ func TestCompileRejectsDuplicateMasks(t *testing.T) {
 
 	if _, err := Compile(cfg, reg); err == nil {
 		t.Fatal("Compile() error = nil, want duplicate mask error")
+	}
+}
+
+func TestShutdownRejectsNewInputs(t *testing.T) {
+	reg := NewRegistry()
+
+	cfg := Config{
+		Inputs: []InputConfig{
+			{Name: "start", Mode: InputModeEdge},
+		},
+		Initial: "idle",
+		States: map[string]StateConfig{
+			"idle": {},
+		},
+	}
+
+	def, err := Compile(cfg, reg)
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	eng, err := NewEngine(def, nil)
+	if err != nil {
+		t.Fatalf("NewEngine() error = %v", err)
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := eng.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+
+	sendCtx, sendCancel := context.WithTimeout(context.Background(), time.Second)
+	defer sendCancel()
+	if err := eng.Send(sendCtx, "start"); !errors.Is(err, ErrEngineClosed) {
+		t.Fatalf("Send() error = %v, want ErrEngineClosed", err)
+	}
+}
+
+func TestShutdownDrainsAcceptedInputs(t *testing.T) {
+	reg := NewRegistry()
+	MustRegisterAction(reg, "mark_running", func(_ context.Context, _ ActionRequest[NoParams]) error { return nil })
+
+	cfg := Config{
+		Inputs: []InputConfig{
+			{Name: "start", Mode: InputModeEdge},
+		},
+		Initial: "idle",
+		States: map[string]StateConfig{
+			"idle": {
+				Transitions: []TransitionConfig{
+					{
+						When: []string{"start"},
+						To:   "running",
+						Actions: []ActionConfig{
+							{
+								Run: &RunActionConfig{Action: "mark_running"},
+							},
+						},
+					},
+				},
+			},
+			"running": {},
+		},
+	}
+
+	engine, err := New(
+		staticSource{cfg: cfg},
+		WithRegistry(reg),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	sendErr := make(chan error, 1)
+	go func() {
+		sendCtx, sendCancel := context.WithTimeout(context.Background(), time.Second)
+		defer sendCancel()
+		sendErr <- engine.Send(sendCtx, "start")
+	}()
+
+	select {
+	case err := <-sendErr:
+		if err != nil {
+			t.Fatalf("Send() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Send() did not complete")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := engine.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+
+	if state := engine.State(); state != "running" {
+		t.Fatalf("State() = %q, want %q", state, "running")
 	}
 }

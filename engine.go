@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/kahoon/pending"
 )
@@ -90,9 +91,12 @@ type Engine struct {
 	inbox    chan event
 	strategy Strategy
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	done   chan struct{}
+	ctx          context.Context
+	cancel       context.CancelFunc
+	done         chan struct{}
+	shutdown     atomic.Bool
+	shutdownCh   chan struct{}
+	shutdownOnce sync.Once
 
 	mu     sync.RWMutex
 	state  StateID
@@ -159,15 +163,16 @@ func NewEngine(def *Definition, exec Executor, opts ...EngineOption) (*Engine, e
 
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{
-		def:      def,
-		executor: exec,
-		id:       cfg.id,
-		inbox:    make(chan event, cfg.inbox),
-		strategy: cfg.strategy,
-		ctx:      ctx,
-		cancel:   cancel,
-		done:     make(chan struct{}),
-		state:    def.initial,
+		def:        def,
+		executor:   exec,
+		id:         cfg.id,
+		inbox:      make(chan event, cfg.inbox),
+		strategy:   cfg.strategy,
+		ctx:        ctx,
+		cancel:     cancel,
+		done:       make(chan struct{}),
+		shutdownCh: make(chan struct{}),
+		state:      def.initial,
 	}
 	go e.loop()
 	return e, nil
@@ -303,7 +308,10 @@ func encodeLevelUpdate(def *Definition, names []string) (InputSet, error) {
 
 // Shutdown stops the engine event loop.
 func (e *Engine) Shutdown(ctx context.Context) error {
-	e.cancel()
+	e.shutdown.Store(true)
+	e.shutdownOnce.Do(func() {
+		close(e.shutdownCh)
+	})
 	select {
 	case <-e.done:
 		if shutdowner, ok := e.executor.(interface{ Shutdown(context.Context) error }); ok {
@@ -321,10 +329,8 @@ func (e *Engine) Close(ctx context.Context) error {
 }
 
 func (e *Engine) send(ctx context.Context, ev event) error {
-	select {
-	case <-e.ctx.Done():
+	if e.shutdown.Load() {
 		return ErrEngineClosed
-	default:
 	}
 
 	if e.strategy == StrategyDrop {
@@ -339,8 +345,6 @@ func (e *Engine) send(ctx context.Context, ev event) error {
 	select {
 	case e.inbox <- ev:
 		return e.wait(ctx, ev.done)
-	case <-e.ctx.Done():
-		return ErrEngineClosed
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -350,8 +354,6 @@ func (e *Engine) wait(ctx context.Context, done chan error) error {
 	select {
 	case err := <-done:
 		return err
-	case <-e.ctx.Done():
-		return ErrEngineClosed
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -362,15 +364,23 @@ func (e *Engine) loop() {
 
 	var pending *event
 	for {
+		if e.shutdown.Load() && pending == nil && len(e.inbox) == 0 {
+			e.cancel()
+			return
+		}
+
 		var ev event
 		if pending != nil {
 			ev = *pending
 			pending = nil
 		} else {
 			select {
-			case <-e.ctx.Done():
-				return
 			case ev = <-e.inbox:
+			case <-e.shutdownCh:
+				if len(e.inbox) == 0 {
+					e.cancel()
+					return
+				}
 			}
 		}
 
@@ -508,9 +518,6 @@ func (e *pendingExecutor) Dispatch(ctx context.Context, eng *Engine, intents []A
 			})
 		case ActionSchedule:
 			e.manager.Schedule(intent.Meta().ActionID, intent.After().Duration(), func(runCtx context.Context) {
-				if runCtx.Err() != nil {
-					return
-				}
 				_ = eng.TrySendMask(intent.Emit())
 			})
 		case ActionCancel:
