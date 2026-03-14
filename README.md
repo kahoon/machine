@@ -245,7 +245,7 @@ Runtime operations are centered on:
 
 ## Example
 
-A runnable example lives in [`examples/security`](https://github.com/kahoon/machine/examples/security).
+A runnable example lives in [`examples/security`](https://github.com/kahoon/machine/tree/main/examples/security).
 
 It demonstrates:
 
@@ -254,7 +254,7 @@ It demonstrates:
 - level inputs for persistent posture like `trusted_device`, `admin_user`, and `geo_risk`
 - timed MFA windows, idle session expiry, and lockout expiry
 - typed security actions implemented in Go while policy stays in YAML
-- two policy files, [`baseline.yaml`](https://github.com/kahoon/machine/examples/security/baseline.yaml) and [`strict.yaml`](https://github.com/kahoon/machine/examples/security/strict.yaml), that reuse the same Go handlers but enforce different behavior
+- two policy files, [`baseline.yaml`](https://github.com/kahoon/machine/blob/main/examples/security/baseline.yaml) and [`strict.yaml`](https://github.com/kahoon/machine/blob/main/examples/security/strict.yaml), that reuse the same Go handlers but enforce different behavior
 
 Run it with:
 
