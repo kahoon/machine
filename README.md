@@ -1,6 +1,7 @@
 # machine
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/kahoon/machine.svg)](https://pkg.go.dev/github.com/kahoon/machine)
+[![Go Report Card](https://goreportcard.com/badge/github.com/kahoon/machine)](https://goreportcard.com/report/github.com/kahoon/machine)
 [![CI](https://github.com/kahoon/machine/actions/workflows/ci.yml/badge.svg)](https://github.com/kahoon/machine/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/kahoon/machine/graph/badge.svg?token=KNtr9Q464k)](https://codecov.io/gh/kahoon/machine)
 
