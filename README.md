@@ -4,12 +4,41 @@
 
 The core idea is simple:
 
-- Go defines the available inputs and typed action handlers.
-- YAML defines states, transitions, and how existing actions are wired together.
-- The machine runtime evaluates transitions deterministically.
+- YAML defines inputs, states, transitions, and built-in timer wiring.
+- Go defines typed action handlers.
+- A single engine goroutine owns state transitions.
 - `pending` executes action intents immediately, later, or not at all.
 
-This makes it possible to change state topology and transition behavior without recompiling, as long as the machine stays within the capability set already registered in Go.
+This makes it possible to change machine behavior without recompiling, as long as the YAML only references actions already registered in Go.
+
+## Quick Start
+
+```go
+reg := machine.NewRegistry()
+
+machine.MustRegisterAction(reg, "begin_cycle", beginCycle)
+machine.MustRegisterAction(reg, "stop_cycle", stopCycle)
+machine.MustRegisterAction(reg, "notify_timeout", notifyTimeout)
+
+eng, err := machine.New(
+    machine.FromFile("machine.yaml"),
+    machine.WithID("door-1"),
+    machine.WithRegistry(reg),
+    machine.WithInbox(16, machine.StrategyBlock),
+    machine.WithActionLimit(8, machine.StrategyDrop),
+)
+if err != nil {
+    return err
+}
+defer eng.Shutdown(context.Background())
+
+if err := eng.Set(ctx, "door_closed"); err != nil {
+    return err
+}
+if err := eng.Send(ctx, "start"); err != nil {
+    return err
+}
+```
 
 ## Why
 
@@ -17,9 +46,8 @@ Most Go state machine libraries are code-first. That is a good fit when the mach
 
 `machine` is aimed at a different boundary:
 
-- inputs are registered in Go
-- actions are registered in Go
-- states and transitions live in YAML
+- inputs, states, and transitions live in YAML
+- actions live in Go
 
 In other words, behavior is reloadable even when capabilities are fixed.
 
@@ -34,20 +62,16 @@ In other words, behavior is reloadable even when capabilities are fixed.
 
 ## Core Model
 
-The runtime is built around four concepts.
-
 ### Inputs
 
-Inputs are compiled into a `uint64` bitmask. Up to 64 named inputs can be registered.
+Inputs are compiled from YAML into a `uint64` bitmask. Up to 64 named inputs can be declared.
 
-Examples:
+Each input has a mode:
 
-- `start`
-- `stop`
-- `door_closed`
-- `timeout`
+- `edge`: transient events such as `start`, `stop`, or `timeout`
+- `level`: persistent truth such as `door_closed`
 
-Timers are modeled as inputs too. A delayed timeout does not mutate state directly. Instead, it emits an input back into the machine.
+Timers are modeled as edge inputs. A delayed timeout does not mutate state directly. Instead, it emits an edge input back into the engine.
 
 ### States
 
@@ -55,11 +79,11 @@ A state has zero or more outgoing transitions.
 
 Each transition has:
 
-- an input mask to match
+- a required input set
 - a destination state
 - zero or more actions
 
-A state can have multiple transitions. For example, a `running` state may react to both `stop` and `timeout`.
+A state can have multiple transitions. Transition order in YAML is significant: the first matching transition wins.
 
 ### Actions
 
@@ -68,65 +92,69 @@ Actions are side effects triggered by transitions.
 There are two kinds of actions:
 
 - domain actions registered in Go
-- built-in machine actions such as scheduling or canceling a delayed emit
+- built-in machine actions such as delayed `schedule` and `cancel`
 
-Domain actions receive typed parameters. YAML remains declarative, but action handlers do not need to work with `map[string]any`.
+Domain actions receive typed parameters. YAML remains declarative, but handlers do not need to work with `map[string]any`.
 
-### Executor
+### Engine
 
-The machine runtime does not execute side effects directly. It emits action intents to an executor.
+The runtime is an active engine with a single goroutine and a bounded inbox.
 
-For the MVP, the intended executor is backed by [`pending`](https://github.com/kahoon/pending):
-
-- immediate execution via zero delay
-- delayed execution for timers
-- cancellation by action ID
-- debouncing and concurrency control
+- edge inputs are processed in FIFO order
+- level updates are processed in order and merged when they arrive back to back
+- timers re-enter through the same engine as edge inputs
+- side effects are dispatched asynchronously through an executor
 
 ## Runtime Boundary
 
-This boundary is the main design constraint.
-
 Defined in Go:
 
-- input catalog and bit positions
 - action registry
 - typed action parameter types
 - side-effect implementations
+- runtime policy such as inbox size and `BLOCK`/`DROP`
 
 Defined in YAML:
 
+- inputs and input modes
 - states
 - transitions
 - transition actions
 - timeout wiring
 
-Changing YAML can alter behavior without recompiling, as long as the YAML only references known inputs and registered actions.
-
 ## Execution Semantics
 
-The intended runtime behavior is:
+The runtime behavior is:
 
-1. The current state receives an input mask.
-2. The machine finds the single matching transition for that state.
-3. The machine commits the new state.
-4. The machine emits action intents to the executor.
+1. The engine receives an edge input or level update.
+2. Level truth is updated if needed.
+3. The current state is evaluated against the effective input set.
+4. The first matching transition in YAML order wins.
+5. The engine commits the new state.
+6. The engine emits action intents to the executor.
 
 Important rules:
 
-- transition selection must be deterministic
+- transition selection is deterministic
 - a state may have many transitions
-- a given input mask must match at most one transition in the current state
 - scheduled callbacks re-enter through the machine as inputs
 - side effects do not mutate state directly
-
-If multiple transitions can match the same input mask, the definition should be rejected unless the ambiguity is resolved explicitly.
+- `Send`, `Set`, `Clear`, and `Update` return after the engine has processed the input
+- timer re-entry uses a non-blocking send path and drops when the inbox is full
 
 ## YAML Shape
 
-The YAML model is state-centric: each state owns its outgoing transitions.
-
 ```yaml
+inputs:
+  - name: start
+    mode: edge
+  - name: stop
+    mode: edge
+  - name: timeout
+    mode: edge
+  - name: door_closed
+    mode: level
+
 initial: idle
 
 states:
@@ -169,33 +197,18 @@ states:
               action: clear_fault
 ```
 
-### Action Verbs
-
-The MVP action syntax is expected to support:
-
-`run`
-: Invoke a registered Go action.
-
-`schedule`
-: Schedule a delayed input emission.
-
-`cancel`
-: Cancel a previously scheduled action by ID.
-
-Action IDs should be scoped by instance at runtime so YAML authors can use stable local names such as `cycle_timeout`.
-
 ## Go API Direction
 
-The public API is expected to revolve around:
+The public API revolves around:
 
-- a registry for inputs and actions
-- a compiled immutable definition
-- a stateful instance
-- an executor interface
+- an action registry
+- a source such as `FromFile(...)`
+- an active engine
+- `Send`/`Set`/`Shutdown` lifecycle methods
 
-Action handlers are intended to be typed with generics at the registration edge, while the core runtime remains non-generic.
+Action handlers are typed with generics at the registration edge, while the core runtime remains non-generic.
 
-Example direction:
+Example:
 
 ```go
 type NotifyTimeoutParams struct {
@@ -207,32 +220,12 @@ func notifyTimeout(ctx context.Context, req machine.ActionRequest[NotifyTimeoutP
 }
 ```
 
-This keeps YAML flexible while preserving strong typing inside handlers.
+Runtime operations are centered on:
 
-## Non-Goals for the MVP
-
-The first version should stay narrow.
-
-Deferred features include:
-
-- boolean expression syntax for transition matching
-- nested or hierarchical states
-- wildcard transitions
-- migration of live instances across incompatible definitions
-- persistence and replay
-- distributed coordination
-- templated action IDs or expressions in YAML
-
-## Status
-
-`machine` is at the design stage. The current plan is:
-
-1. lock the runtime boundary and YAML shape
-2. implement the core compiler and instance runtime
-3. add a `pending`-backed executor
-4. validate the model with a small end-to-end example
-
-The goal is an elegant, reloadable state machine with a small surface area and predictable semantics.
+- `New(...)`
+- `Send(...)` and `TrySend(...)` for edge inputs
+- `Set(...)`, `Clear(...)`, and `Update(...)` for level inputs
+- `Shutdown(...)`
 
 ## Example
 
@@ -251,3 +244,17 @@ Run it with:
 ```bash
 go run ./examples/door
 ```
+
+## Non-Goals for the MVP
+
+The first version should stay narrow.
+
+Deferred features include:
+
+- boolean expression syntax for transition matching
+- nested or hierarchical states
+- wildcard transitions
+- migration of live instances across incompatible definitions
+- persistence and replay
+- distributed coordination
+- templated action IDs or expressions in YAML

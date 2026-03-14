@@ -1,3 +1,13 @@
+inputs:
+  - name: start
+    mode: edge
+  - name: stop
+    mode: edge
+  - name: timeout
+    mode: edge
+  - name: door_closed
+    mode: level
+
 initial: idle
 
 states:

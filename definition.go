@@ -16,7 +16,7 @@ func (d Duration) Duration() time.Duration {
 }
 
 type compiledTransition struct {
-	mask    InputSet
+	require InputSet
 	to      StateID
 	actions []compiledAction
 }
@@ -26,12 +26,20 @@ type compiledState struct {
 	transitions []compiledTransition
 }
 
+type compiledInput struct {
+	bit  uint8
+	mode InputMode
+}
+
 // Definition is the compiled immutable machine definition.
 type Definition struct {
 	initial    StateID
 	stateNames []string
 	stateIndex map[string]StateID
 	states     []compiledState
+	inputs     map[string]compiledInput
+	edgeMask   InputSet
+	levelMask  InputSet
 }
 
 // InitialState returns the symbolic name of the definition's initial state.
@@ -48,4 +56,23 @@ func (d *Definition) stateName(id StateID) string {
 
 func (d *Definition) state(id StateID) compiledState {
 	return d.states[id]
+}
+
+func (d *Definition) encodeMode(names []string, mode InputMode) (InputSet, error) {
+	if len(names) == 0 {
+		return 0, ErrNoInputs
+	}
+
+	var mask InputSet
+	for _, name := range names {
+		input, ok := d.inputs[name]
+		if !ok {
+			return 0, wrapUnknownInput(name)
+		}
+		if input.mode != mode {
+			return 0, wrapInputMode(name, mode)
+		}
+		mask |= InputSet(1) << input.bit
+	}
+	return mask, nil
 }

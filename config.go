@@ -1,9 +1,24 @@
 package machine
 
+// InputMode determines how an input behaves at runtime.
+type InputMode string
+
+const (
+	InputModeEdge  InputMode = "edge"
+	InputModeLevel InputMode = "level"
+)
+
 // Config is the symbolic machine definition loaded from YAML or other sources.
 type Config struct {
+	Inputs  []InputConfig          `yaml:"inputs"`
 	Initial string                 `yaml:"initial"`
 	States  map[string]StateConfig `yaml:"states"`
+}
+
+// InputConfig declares a named machine input in YAML.
+type InputConfig struct {
+	Name string    `yaml:"name"`
+	Mode InputMode `yaml:"mode"`
 }
 
 // StateConfig describes a symbolic state in the machine definition.

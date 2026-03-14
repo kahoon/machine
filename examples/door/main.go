@@ -9,9 +9,6 @@ import (
 	"time"
 
 	"github.com/kahoon/machine"
-	"github.com/kahoon/machine/actions"
-	machineyaml "github.com/kahoon/machine/yaml"
-	"github.com/kahoon/pending"
 )
 
 type notifyTimeoutParams struct {
@@ -29,11 +26,7 @@ func main() {
 }
 
 func runDemo() ([]string, error) {
-	reg := machine.NewRegistry().
-		MustInput("start", 0).
-		MustInput("stop", 1).
-		MustInput("timeout", 2).
-		MustInput("door_closed", 3)
+	reg := machine.NewRegistry()
 
 	timeoutEvents := make(chan string, 1)
 
@@ -51,40 +44,55 @@ func runDemo() ([]string, error) {
 		return nil
 	})
 
-	def, err := machineyaml.CompileFile(machinePath(), reg)
+	lines := make([]string, 0, 5)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	stopCase, err := machine.New(
+		machine.FromFile(machinePath()),
+		machine.WithID("door-1"),
+		machine.WithRegistry(reg),
+	)
 	if err != nil {
 		return nil, err
 	}
-
-	manager := pending.NewManager()
 	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = manager.Shutdown(ctx)
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), time.Second)
+		defer closeCancel()
+		_ = stopCase.Shutdown(closeCtx)
 	}()
 
-	exec := actions.NewPendingExecutor(manager)
-	lines := make([]string, 0, 5)
-
-	stopCase, err := machine.New(def, exec, machine.WithInstanceID("door-1"))
-	if err != nil {
+	if err := stopCase.Set(ctx, "door_closed"); err != nil {
 		return nil, err
 	}
-	if _, err := stopCase.Apply(context.Background(), machine.MustInputs(reg, "start", "door_closed")); err != nil {
+	if err := stopCase.Send(ctx, "start"); err != nil {
 		return nil, err
 	}
 	lines = append(lines, "stop scenario after start: "+stopCase.State())
-	if _, err := stopCase.Apply(context.Background(), machine.MustInputs(reg, "stop")); err != nil {
+	if err := stopCase.Send(ctx, "stop"); err != nil {
 		return nil, err
 	}
 	time.Sleep(75 * time.Millisecond)
 	lines = append(lines, "stop scenario final: "+stopCase.State())
 
-	timeoutCase, err := machine.New(def, exec, machine.WithInstanceID("door-2"))
+	timeoutCase, err := machine.New(
+		machine.FromFile(machinePath()),
+		machine.WithID("door-2"),
+		machine.WithRegistry(reg),
+	)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := timeoutCase.Apply(context.Background(), machine.MustInputs(reg, "start", "door_closed")); err != nil {
+	defer func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), time.Second)
+		defer closeCancel()
+		_ = timeoutCase.Shutdown(closeCtx)
+	}()
+
+	if err := timeoutCase.Set(ctx, "door_closed"); err != nil {
+		return nil, err
+	}
+	if err := timeoutCase.Send(ctx, "start"); err != nil {
 		return nil, err
 	}
 	lines = append(lines, "timeout scenario after start: "+timeoutCase.State())

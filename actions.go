@@ -132,10 +132,10 @@ type ActionIntent struct {
 	invoke func(context.Context) error
 }
 
-func newActionIntent(inst *Instance, spec compiledAction, from, to string, inputs InputSet) ActionIntent {
+func newActionIntent(eng *Engine, spec compiledAction, from, to string, inputs InputSet) ActionIntent {
 	meta := ActionMeta{
-		InstanceID: inst.id,
-		ActionID:   inst.scopedActionID(spec.id),
+		InstanceID: eng.id,
+		ActionID:   eng.scopedActionID(spec.id),
 		Name:       spec.name,
 		From:       from,
 		To:         to,

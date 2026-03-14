@@ -3,23 +3,27 @@ package machine
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 type recordingExecutor struct {
 	intents []ActionIntent
 }
 
-func (r *recordingExecutor) Dispatch(_ context.Context, _ *Instance, intents []ActionIntent) error {
+func (r *recordingExecutor) Dispatch(ctx context.Context, _ *Engine, intents []ActionIntent) error {
 	r.intents = append(r.intents, intents...)
+	for _, intent := range intents {
+		if intent.Kind() == ActionRun {
+			if err := intent.Invoke(ctx); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
-func TestCompileAndApply(t *testing.T) {
-	reg := NewRegistry().
-		MustInput("start", 0).
-		MustInput("stop", 1).
-		MustInput("timeout", 2).
-		MustInput("door_closed", 3)
+func TestCompileAndRun(t *testing.T) {
+	reg := NewRegistry()
 
 	type NotifyParams struct {
 		Message string `yaml:"message"`
@@ -32,6 +36,12 @@ func TestCompileAndApply(t *testing.T) {
 	})
 
 	cfg := Config{
+		Inputs: []InputConfig{
+			{Name: "start", Mode: InputModeEdge},
+			{Name: "stop", Mode: InputModeEdge},
+			{Name: "timeout", Mode: InputModeEdge},
+			{Name: "door_closed", Mode: InputModeLevel},
+		},
 		Initial: "idle",
 		States: map[string]StateConfig{
 			"idle": {
@@ -79,23 +89,32 @@ func TestCompileAndApply(t *testing.T) {
 	}
 
 	exec := &recordingExecutor{}
-	inst, err := New(def, exec, WithInstanceID("door-1"))
+	eng, err := NewEngine(def, exec, WithID("door-1"))
 	if err != nil {
-		t.Fatalf("New() error = %v", err)
+		t.Fatalf("NewEngine() error = %v", err)
 	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := eng.Close(closeCtx); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	}()
 
-	result, err := inst.Apply(context.Background(), MustInputs(reg, "start", "door_closed"))
-	if err != nil {
-		t.Fatalf("Apply() error = %v", err)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if err := eng.Set(ctx, "door_closed"); err != nil {
+		t.Fatalf("Set() error = %v", err)
 	}
-	if !result.Matched || result.From != "idle" || result.To != "running" {
-		t.Fatalf("unexpected result: %+v", result)
+	if err := eng.Send(ctx, "start"); err != nil {
+		t.Fatalf("Send(start) error = %v", err)
 	}
-	if state := inst.State(); state != "running" {
+	if state := eng.State(); state != "running" {
 		t.Fatalf("State() = %q, want %q", state, "running")
 	}
 	if len(exec.intents) != 1 {
-		t.Fatalf("expected 1 intent, got %d", len(exec.intents))
+		t.Fatalf("expected 1 intent after start, got %d", len(exec.intents))
 	}
 	if exec.intents[0].Kind() != ActionSchedule {
 		t.Fatalf("intent kind = %v, want ActionSchedule", exec.intents[0].Kind())
@@ -105,30 +124,63 @@ func TestCompileAndApply(t *testing.T) {
 	}
 
 	exec.intents = nil
-	result, err = inst.Apply(context.Background(), MustInputs(reg, "timeout"))
-	if err != nil {
-		t.Fatalf("Apply(timeout) error = %v", err)
+	if err := eng.Send(ctx, "timeout"); err != nil {
+		t.Fatalf("Send(timeout) error = %v", err)
 	}
-	if !result.Matched || result.From != "running" || result.To != "fault" {
-		t.Fatalf("unexpected timeout result: %+v", result)
+	if state := eng.State(); state != "fault" {
+		t.Fatalf("State() = %q, want %q", state, "fault")
 	}
 	if len(exec.intents) != 1 {
-		t.Fatalf("expected 1 timeout intent, got %d", len(exec.intents))
-	}
-	if err := exec.intents[0].Invoke(context.Background()); err != nil {
-		t.Fatalf("Invoke() error = %v", err)
+		t.Fatalf("expected 1 intent after timeout, got %d", len(exec.intents))
 	}
 	if got.Message != "cycle took too long" {
 		t.Fatalf("decoded params = %+v", got)
 	}
 }
 
-func TestCompileRejectsDuplicateMasks(t *testing.T) {
-	reg := NewRegistry().
-		MustInput("start", 0).
-		MustInput("door_closed", 1)
+func TestCompileRejectsLevelTimerEmit(t *testing.T) {
+	reg := NewRegistry()
 
 	cfg := Config{
+		Inputs: []InputConfig{
+			{Name: "start", Mode: InputModeEdge},
+			{Name: "door_closed", Mode: InputModeLevel},
+		},
+		Initial: "idle",
+		States: map[string]StateConfig{
+			"idle": {
+				Transitions: []TransitionConfig{
+					{
+						When: []string{"start"},
+						To:   "idle",
+						Actions: []ActionConfig{
+							{
+								Schedule: &ScheduleActionConfig{
+									ID:    "door_signal",
+									After: "1s",
+									Emit:  "door_closed",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if _, err := Compile(cfg, reg); err == nil {
+		t.Fatal("Compile() error = nil, want level timer emit failure")
+	}
+}
+
+func TestCompileRejectsDuplicateMasks(t *testing.T) {
+	reg := NewRegistry()
+
+	cfg := Config{
+		Inputs: []InputConfig{
+			{Name: "start", Mode: InputModeEdge},
+			{Name: "door_closed", Mode: InputModeLevel},
+		},
 		Initial: "idle",
 		States: map[string]StateConfig{
 			"idle": {
