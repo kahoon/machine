@@ -244,20 +244,20 @@ Runtime operations are centered on:
 
 ## Example
 
-A runnable example lives in [`examples/door`](/Users/kareem/Projects/machine/examples/door).
+A runnable example lives in [`examples/security`](/Users/kareem/Projects/machine/examples/security).
 
 It demonstrates:
 
-- a YAML-defined machine loaded at runtime
-- typed action registration in Go
-- immediate actions executed through `pending`
-- a scheduled timeout that re-enters the machine as an input
-- cancellation of a pending timeout when a stop transition wins
+- a security posture manager loaded from YAML at runtime
+- edge inputs for events like `login`, `mfa_failed`, and `suspicious_activity`
+- level inputs for persistent posture like `trusted_device`, `admin_user`, and `geo_risk`
+- timed MFA windows, idle session expiry, and lockout expiry
+- typed security actions implemented in Go while policy stays in YAML
 
 Run it with:
 
 ```bash
-go run ./examples/door
+go run ./examples/security
 ```
 
 ## Non-Goals for the MVP
