@@ -1,0 +1,176 @@
+inputs:
+  - name: login
+    mode: edge
+  - name: logout
+    mode: edge
+  - name: mfa_passed
+    mode: edge
+  - name: mfa_failed
+    mode: edge
+  - name: suspicious_activity
+    mode: edge
+  - name: mfa_timeout
+    mode: edge
+  - name: idle_timeout
+    mode: edge
+  - name: lockout_expired
+    mode: edge
+  - name: trusted_device
+    mode: level
+  - name: geo_risk
+    mode: level
+  - name: admin_user
+    mode: level
+
+initial: signed_out
+
+states:
+  signed_out:
+    transitions:
+      - when: [login, admin_user]
+        to: challenged
+        actions:
+          - run:
+              action: prompt_mfa
+              with:
+                reason: high risk login
+          - run:
+              action: alert_security
+              with:
+                message: admin or geo-risk login requires MFA
+          - schedule:
+              id: mfa_window
+              after: 25ms
+              emit: mfa_timeout
+
+      - when: [login, geo_risk]
+        to: challenged
+        actions:
+          - run:
+              action: prompt_mfa
+              with:
+                reason: high risk login
+          - run:
+              action: alert_security
+              with:
+                message: admin or geo-risk login requires MFA
+          - schedule:
+              id: mfa_window
+              after: 25ms
+              emit: mfa_timeout
+
+      - when: [login, trusted_device]
+        to: challenged
+        actions:
+          - run:
+              action: prompt_mfa
+              with:
+                reason: strict policy requires MFA
+          - run:
+              action: alert_security
+              with:
+                message: trusted device bypass disabled
+          - schedule:
+              id: mfa_window
+              after: 25ms
+              emit: mfa_timeout
+
+      - when: [login]
+        to: challenged
+        actions:
+          - run:
+              action: prompt_mfa
+              with:
+                reason: strict policy requires MFA
+          - schedule:
+              id: mfa_window
+              after: 25ms
+              emit: mfa_timeout
+
+  challenged:
+    transitions:
+      - when: [mfa_passed]
+        to: active
+        actions:
+          - cancel:
+              id: mfa_window
+          - run:
+              action: issue_session
+              with:
+                label: MFA passed under strict policy
+          - schedule:
+              id: idle_window
+              after: 35ms
+              emit: idle_timeout
+
+      - when: [mfa_failed]
+        to: locked
+        actions:
+          - cancel:
+              id: mfa_window
+          - run:
+              action: lock_account
+              with:
+                reason: MFA failed
+          - schedule:
+              id: lockout_window
+              after: 45ms
+              emit: lockout_expired
+
+      - when: [mfa_timeout]
+        to: locked
+        actions:
+          - run:
+              action: lock_account
+              with:
+                reason: MFA timeout
+          - schedule:
+              id: lockout_window
+              after: 45ms
+              emit: lockout_expired
+
+  active:
+    transitions:
+      - when: [suspicious_activity]
+        to: locked
+        actions:
+          - cancel:
+              id: idle_window
+          - run:
+              action: alert_security
+              with:
+                message: suspicious activity triggered immediate lock
+          - run:
+              action: lock_account
+              with:
+                reason: suspicious activity on strict policy
+          - schedule:
+              id: lockout_window
+              after: 45ms
+              emit: lockout_expired
+
+      - when: [logout]
+        to: signed_out
+        actions:
+          - cancel:
+              id: idle_window
+          - run:
+              action: revoke_session
+              with:
+                reason: user logout
+
+      - when: [idle_timeout]
+        to: signed_out
+        actions:
+          - run:
+              action: revoke_session
+              with:
+                reason: strict idle timeout
+
+  locked:
+    transitions:
+      - when: [lockout_expired]
+        to: signed_out
+        actions:
+          - run:
+              action: clear_lockout
