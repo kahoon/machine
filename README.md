@@ -253,6 +253,7 @@ It demonstrates:
 - level inputs for persistent posture like `trusted_device`, `admin_user`, and `geo_risk`
 - timed MFA windows, idle session expiry, and lockout expiry
 - typed security actions implemented in Go while policy stays in YAML
+- two policy files, [`baseline.yaml`](/Users/kareem/Projects/machine/examples/security/baseline.yaml) and [`strict.yaml`](/Users/kareem/Projects/machine/examples/security/strict.yaml), that reuse the same Go handlers but enforce different behavior
 
 Run it with:
 
